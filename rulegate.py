@@ -27,14 +27,14 @@ Standard library only, Python 3.8+. MIT licence.
 import argparse, hashlib, hmac, json, math, os, random, re, secrets, sys, time, unicodedata
 from pathlib import Path
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 CONFIG_FILE = Path(os.path.expanduser("~/.rulegate/config.json"))   # the ONLY config source (no env, no cwd)
 DEFAULTS = {
     "rules": [],                       # list of rule files (markdown)
     "heading": r"^#{2,3}\s+\S",        # which markdown headings start a section
     "min_section_words": 40,           # shorter sections are never asked
     "questions": 3,
-    "keywords_per_section": 12,        # distinctive terms considered per section
+    "keywords_per_section": 20,        # distinctive terms considered per section
     "min_hits": 3,                     # how many of them an answer must contain
     "min_answer_words": 12,
     "max_answer_words": 120,           # longer answers are rejected (no keyword dumping)
@@ -128,7 +128,9 @@ def tokens(s):
     for t in re.findall(r"[a-z0-9][a-z0-9_.,%-]*[a-z0-9%]|[a-z0-9]", norm(s)):
         if re.search(r"\d", t):
             t = t.strip(".,")
-            if len(t) >= 2 and not re.fullmatch(r"(19|20)\d\d([-.]\d\d){0,2}", t):   # numbers yes, dates no
+            if (len(t) >= 2 and not re.fullmatch(r"(19|20)\d\d([-.]\d\d){0,2}", t)      # numbers yes, dates no
+                    and not re.fullmatch(r"\d{1,2}\.\d{1,2}\.?(\d{2,4})?", t)              # 26.08 / 26.08.2026
+                    and not re.fullmatch(r"0\d", t)):                                        # 01, 02 (list numbering)
                 out.append(t)
         elif len(t) >= 5 and t not in STOP:
             out.append(t)
@@ -170,7 +172,8 @@ def keywords(cfg, secs):
             if t not in head:
                 tf[t] = tf.get(t, 0) + 1
         score = {t: c * math.log((n + 1) / df.get(t, 1)) for t, c in tf.items()}
-        s["kw"] = [t for t, _ in sorted(score.items(), key=lambda x: (-x[1], x[0]))[:cfg["keywords_per_section"]]]
+        # ties: prefer longer (more specific) terms over alphabetical accidents
+        s["kw"] = [t for t, _ in sorted(score.items(), key=lambda x: (-x[1], -len(x[0]), x[0]))[:cfg["keywords_per_section"]]]
     return secs
 
 
@@ -178,13 +181,14 @@ def grade(cfg, sec, answer, all_kw):
     words = answer.split()
     toks = tokens(answer)
     tset = set(toks)
-    hits = [k for k in sec["kw"] if k in tset or any(k in t for t in tset if len(k) >= 6)]
+    stems = {t[:6] for t in tset if len(t) >= 6}
+    hits = [k for k in sec["kw"] if k in tset or (len(k) >= 6 and k[:6] in stems)]
     if not (cfg["min_answer_words"] <= len(words) <= cfg["max_answer_words"]):
         return False, len(hits)
     # keyword dumping: an answer that carries more terms of OTHER sections than of the asked one
     # was not written from reading this section
     fremd = {t for t in tset if t in all_kw and t not in sec["kw"]}
-    if len(fremd) > len(hits) + 3:
+    if len(fremd) > max(8, 3 * len(hits)):
         return False, len(hits)
     return len(hits) >= min(cfg["min_hits"], len(sec["kw"])), len(hits)
 
