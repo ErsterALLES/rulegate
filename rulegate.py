@@ -27,7 +27,7 @@ Standard library only, Python 3.8+. MIT licence.
 import argparse, hashlib, hmac, json, math, os, random, re, secrets, sys, time, unicodedata
 from pathlib import Path
 
-VERSION = "0.2.1"
+VERSION = "0.2.2"
 CONFIG_FILE = Path(os.path.expanduser("~/.rulegate/config.json"))   # the ONLY config source (no env, no cwd)
 DEFAULTS = {
     "rules": [],                       # list of rule files (markdown)
@@ -48,7 +48,7 @@ DEFAULTS = {
     "language": "en",
 }
 FLOOR = {"questions": 3, "min_hits": 3, "min_answer_words": 12}    # config may raise, never lower
-READ_CMDS = r"(cat|less|head|tail|grep|rg|ls|wc|pwd)"
+READ_CMDS = r"(cat|less|head|tail|grep|ls|wc|pwd)"
 STOP = set("""
 aber alle allem allen aller alles also auch auf aus bei beim bereits bevor bis bitte damit dann dass daher
 davon dazu dem den denen der des deshalb die dies diese diesem diesen dieser dieses doch dort durch eine
@@ -224,11 +224,7 @@ def tr(cfg, k, **kw):
 # ------------------------------------------------------------------ commands
 def cmd_quiz(cfg, a):
     who = a.who or ""
-    cool = state(cfg, "cooldown", sha(who or "-")[:16])
-    if cool.is_file():
-        left = float(cool.read_text()) - time.time()
-        if left > 0:
-            print(tr(cfg, "cool", s=int(left)), file=sys.stderr); sys.exit(4)
+    cooldown_or_exit(cfg)
     secs = keywords(cfg, sections(cfg))
     if len(secs) < cfg["questions"]:
         sys.exit("rulegate: not enough rule sections found - check `rules` and `heading` in the config.")
@@ -243,7 +239,16 @@ def cmd_quiz(cfg, a):
     print("\n" + tr(cfg, "how", cid=cid))
 
 
+def cooldown_or_exit(cfg):
+    cool = state(cfg, "cooldown", "all")
+    if cool.is_file():
+        left = float(cool.read_text()) - time.time()
+        if left > 0:
+            print(tr(cfg, "cool", s=int(left)), file=sys.stderr); sys.exit(4)
+
+
 def cmd_answer(cfg, a):
+    cooldown_or_exit(cfg)
     if not re.fullmatch(r"[0-9a-f]{8}", a.challenge or ""):
         sys.exit("rulegate: invalid quiz id.")
     p = state(cfg, "challenges", a.challenge + ".json")
@@ -269,7 +274,9 @@ def cmd_answer(cfg, a):
     log(cfg, event="answer", challenge=ch["id"], who=who, passed=not bad,
         results=[{"section": r["section"], "ok": r["ok"]} for r in res])
     if bad:
-        state(cfg, "cooldown", sha(who or "-")[:16]).write_text(str(time.time() + 60 * cfg["cooldown_minutes"]))
+        state(cfg, "cooldown", "all").write_text(str(time.time() + 60 * cfg["cooldown_minutes"]))
+        for other in state(cfg, "challenges", "x").parent.glob("*.json"):   # no stockpiling of quizzes
+            other.unlink()
         for i, r in enumerate(res, 1):
             print(f"  {'OK ' if r['ok'] else 'NO '} {i}. {r['section']}")
         print(tr(cfg, "fail", bad=bad, n=len(res), m=cfg["cooldown_minutes"]))
@@ -337,7 +344,9 @@ def bash_is_read_only(cmd):
     if re.search(r"[;&|<>`$\n\\]|\(|\)", cmd):
         return False
     c = cmd.strip()
-    if re.fullmatch(r"(\S*/)?(rulegate(\.py)?|python3?)(\s+\S*rulegate(\.py)?)?\s+(quiz|answer|check)(\s+.*)?", c):
+    if ".rulegate" in c:                                        # never read rulegate's own state/key before the receipt
+        return False
+    if re.fullmatch(r"((\S*/)?python3?\s+)?(\S*/)?rulegate(\.py)?\s+(quiz|answer|check)(\s+.*)?", c):
         return True
     return bool(re.fullmatch(READ_CMDS + r"(\s+[^\s]+)*", c)) and not re.search(r"\s-(-?)(exec|delete|fprint)", c)
 
